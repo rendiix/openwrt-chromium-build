@@ -91,7 +91,7 @@ jobs:
         make -j$(nproc) V=s
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: chromium-${{ env.CHROMIUM_VERSION }}
         path: ${{ env.SDK_DIR }}/bin/packages/qualcommax/ipq807x/chromium-captive_*.ipk
