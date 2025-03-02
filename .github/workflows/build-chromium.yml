@@ -1,16 +1,18 @@
-name: Build Chromium 131 for Captive
+name: Build Chromium Headless with Prebuilt Toolchain
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 env:
   CHROMIUM_VERSION: "131.0.6778.264"
-  SDK_URL: "https://downloads.openwrt.org/releases/24.10.0/targets/qualcommax/ipq807x/openwrt-sdk-24.10.0-qualcommax-ipq807x_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+  TOOLCHAIN_URL: "https://downloads.openwrt.org/releases/24.10.0/targets/qualcommax/ipq807x/openwrt-toolchain-24.10.0-qualcommax-ipq807x_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 180
 
     steps:
     - name: Setup Environment
@@ -19,42 +21,45 @@ jobs:
         sudo apt-get install -y zstd python3-pip ninja-build
         pip install gnpy
 
-    - name: Download SDK
+    - name: Download and Extract Toolchain
       run: |
-        wget ${{ env.SDK_URL }} -O sdk.tar.zst
-        unzstd sdk.tar.zst -o sdk.tar
-        tar -xf sdk.tar
-        echo "SDK_DIR=$(realpath openwrt-sdk-*)" >> $GITHUB_ENV
+        wget ${{ env.TOOLCHAIN_URL }} -O toolchain.tar.zst
+        unzstd toolchain.tar.zst -o toolchain.tar
+        tar -xf toolchain.tar
+        echo "TOOLCHAIN_DIR=$(realpath openwrt-toolchain-*)" >> $GITHUB_ENV
+        echo "${{ env.TOOLCHAIN_DIR }}/toolchain-aarch64_cortex-a53+neon-vfpv4_gcc-13.3.0_musl/bin" >> $GITHUB_PATH
 
-    - name: Generate Dynamic Makefile
+    - name: Generate Minimal Makefile
       run: |
-        mkdir -p ${{ env.SDK_DIR }}/package/chromium-captive
-        cat << EOF > ${{ env.SDK_DIR }}/package/chromium-captive/Makefile
-        include \$(TOPDIR)/rules.mk
+        mkdir -p chromium-captive
+        cat << 'EOF' > chromium-captive/Makefile
+        include $(TOPDIR)/rules.mk
 
         PKG_NAME:=chromium-captive
         PKG_VERSION:=${{ env.CHROMIUM_VERSION }}
         PKG_RELEASE:=1
 
-        PKG_SOURCE:=chromium-\$(PKG_VERSION).tar.xz
+        PKG_SOURCE:=chromium-$(PKG_VERSION).tar.xz
         PKG_SOURCE_URL:=https://commondatastorage.googleapis.com/chromium-browser-official/
         PKG_HASH:=skip
 
-        PKG_BUILD_DEPENDS:=python3/host libnss
+        PKG_BUILD_DEPENDS:=python3/host
 
-        include \$(INCLUDE_DIR)/package.mk
+        include $(INCLUDE_DIR)/package.mk
 
         define Package/chromium-captive
           SECTION:=net
           CATEGORY:=Network
-          TITLE:=Chromium Headless v${{ env.CHROMIUM_VERSION }}
-          DEPENDS:=+libnss +libevent2-core
-          URL:=https://www.chromium.org
+          TITLE:=Chromium Headless Captive
+          DEPENDS:=+libnss +libevent2-core +zlib
+          URL:=https://chromium.org
         endef
 
         define Build/Configure
-          [ ! -d \$(PKG_BUILD_DIR) ] && mkdir -p \$(PKG_BUILD_DIR)
-          gn gen \$(PKG_BUILD_DIR)/out --args='\\
+          export AR=aarch64-openwrt-linux-ar
+          export CC=aarch64-openwrt-linux-gcc
+          export CXX=aarch64-openwrt-linux-g++
+          gn gen out --args='\\
             use_headless=true \\
             is_debug=false \\
             target_os="linux" \\
@@ -62,36 +67,34 @@ jobs:
             use_glib=false \\
             use_icu=false \\
             enable_mdns=false \\
-            disable_file_support=true \\
-            blink_enable_generated_code_formatting=false \\
-            enable_reporting=false \\
             symbol_level=0'
         endef
 
         define Build/Compile
-          ninja -C \$(PKG_BUILD_DIR)/out headless_shell
-          \$(STRIP) --strip-all \$(PKG_BUILD_DIR)/out/headless_shell
+          ninja -C out headless_shell
+          aarch64-openwrt-linux-strip --strip-all out/headless_shell
         endef
 
         define Package/chromium-captive/install
-          \$(INSTALL_DIR) \$(1)/usr/bin
-          \$(INSTALL_BIN) \$(PKG_BUILD_DIR)/out/headless_shell \$(1)/usr/bin/chromium-captive
+          $(INSTALL_DIR) $(1)/usr/bin
+          $(INSTALL_BIN) out/headless_shell $(1)/usr/bin/chromium-captive
         endef
 
-        \$(eval \$(call BuildPackage,chromium-captive))
+        $(eval $(call BuildPackage,chromium-captive))
         EOF
 
     - name: Build Chromium
       run: |
-        cd ${{ env.SDK_DIR }}
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-        echo "CONFIG_PACKAGE_chromium-captive=y" >> .config
-        make defconfig
+        export STAGING_DIR=${{ env.TOOLCHAIN_DIR }}/toolchain-aarch64_cortex-a53+neon-vfpv4_gcc-13.3.0_musl
+        export PATH=$STAGING_DIR/bin:$PATH
+        
+        cd chromium-captive
         make -j$(nproc) V=s
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: chromium-${{ env.CHROMIUM_VERSION }}
-        path: ${{ env.SDK_DIR }}/bin/packages/qualcommax/ipq807x/chromium-captive_*.ipk
+        name: chromium-captive
+        path: |
+          chromium-captive/out/headless_shell
+          chromium-captive/*.ipk
