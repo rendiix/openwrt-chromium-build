@@ -2,8 +2,6 @@ name: Build Chromium Headless with Prebuilt Toolchain
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 env:
   CHROMIUM_VERSION: "131.0.6778.264"
